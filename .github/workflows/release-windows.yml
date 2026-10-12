@@ -185,15 +185,33 @@ jobs:
       # 先跑测试再打包 —— 发出去的 exe 是用户唯一的运行体，
       # 构建脚本自带一道门禁比事后排查便宜。
       #
-      # ⚠️ 允许失败：上游测试基线里有**一个已知的并发偶发失败**
-      # （internal/api/handlers/management 的
-      # TestDeletePluginRemovesDiscoveredFileAndConfig，单跑 3/3 通过）。
-      # 卡死在这里会让发版永远过不去，而它跟产物正确性无关。
-      # 真正的兜底是下面的「冒烟」步骤：编译出的 exe 必须能起、能应答。
+      # ⚠️ **不许整条放行**（2026-10-12 改，原来带 `continue-on-error: true`）。
+      #
+      # 原来那个写法的问题是**范围**：它放行的是「任何一个用例失败」，
+      # 于是上游某次改动真的弄坏了什么，发版**照样过**，日志里只有一句被忽略的红
+      # —— 用户拿到一个测试不过的 exe，谁也看不见。
+      #
+      # 现在只放行**那一个**已知的并发偶发失败
+      # （`internal/api/handlers/management` 的
+      # `TestDeletePluginRemovesDiscoveredFileAndConfig`，单跑 3/3 通过）：
+      # 用 `-skip` 把它排除在**必须通过**的集合之外，其余任何失败都阻断发版。
+      # `-skip` 是 Go 1.20 加给 `go test` 的（[发布说明](https://go.dev/doc/go1.20)），
+      # 本仓用的是 1.26.x。
+      #
+      # ⚠️ 跳过的用例**要在日志里留痕**（`::warning::` 会进 Actions 摘要），
+      # 否则「跑过了」与「跳过了」在日志里长一个样。
+      #
+      # ⚠️ 这条豁免是**有期限**的：它属于上游的 flaky，能上报就上报；
+      # 上游修掉之后这个 `-skip` 必须删（否则它会把那条用例**永久**挡在门外）。
+      # 记录见 dsh-cpa-switch 的 `docs/PLAN.md` §2.4。
       - name: Test
         shell: bash
-        continue-on-error: true
-        run: go test ./... -count=1
+        run: |
+          set -euo pipefail
+          # 只跳过这一条；其余失败（含编译失败）都会让这一步非 0 → 阻断发版。
+          skipped='^(TestDeletePluginRemovesDiscoveredFileAndConfig)$'
+          echo "::warning::跳过已知 flaky 用例 ${skipped}（其余失败会阻断发版）"
+          go test ./... -count=1 -skip "$skipped"
 
       - name: Build
         shell: bash
